@@ -3,22 +3,22 @@ import sys
 import re
 
 # Define the ignore lists
-ignore_dirs = {'node_modules', 'fonts', '.git', 'images'}
-ignore_files = {'package-lock.json', 'database.db'}
+IGNORE_DIRS = {'node_modules', 'fonts', '.git', 'images'}
+IGNORE_FILES = {'package-lock.json', 'database.db'}
 
 # Get the script's directory and folder name
 script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
 folder_name = os.path.basename(script_dir)
 
 # Get the output filename
-output_file = 'output.md'
+OUTPUT_FILE = 'output.md'
 
 # Add the script and output file to the ignore list
 script_name = os.path.basename(sys.argv[0])
-ignore_files.update({script_name, output_file})
+IGNORE_FILES.update({script_name, OUTPUT_FILE})
 
 # Mapping of file extensions to language identifiers
-language_extensions = {
+LANGUAGE_EXTENSIONS = {
     '.py': 'python',
     '.js': 'javascript',
     '.jsx': 'javascript',
@@ -51,109 +51,107 @@ total_words = 0
 total_files = 0
 folders_set = set()
 
-# Function to create a nested dictionary representing the directory tree
-def insert_into_tree(tree, path_parts, file_name):
-    if not path_parts:
-        return
-    first = path_parts[0]
-    if first not in tree:
-        tree[first] = {}
-    if len(path_parts) == 1:
-        tree[first][file_name] = None
-    else:
-        insert_into_tree(tree[first], path_parts[1:], file_name)
+# Initialize output content and directory tree
+output_content = []
+directory_tree = {}
 
-# Function to generate the markdown index from the directory tree
+# Compile regex patterns outside functions for efficiency
+anchor_pattern = re.compile(r'[\s/\\]+')
+invalid_char_pattern = re.compile(r'[^a-zA-Z0-9\-_]')
+
+
+def generate_anchor(path):
+    """Generate a valid anchor from a file path."""
+    anchor = anchor_pattern.sub('-', path)
+    anchor = invalid_char_pattern.sub('', anchor)
+    return anchor.lower()
+
+
+def insert_into_tree(tree, path_parts):
+    """Insert directories and files into the directory tree."""
+    for part in path_parts:
+        tree = tree.setdefault(part, {})
+
+
 def generate_index(tree, parent_path=''):
+    """Generate the markdown index from the directory tree."""
     index_lines = []
     for key in sorted(tree.keys()):
         current_path = os.path.join(parent_path, key).replace('\\', '/')
-        if tree[key] is None:
-            # It's a file
-            anchor = generate_anchor(current_path)
-            index_lines.append(f'- 📄 [{key}](#{anchor})')
-        else:
-            # It's a directory
+        if tree[key]:
             index_lines.append(f'- 📁 **{key}**')
             sub_lines = generate_index(tree[key], current_path)
-            sub_lines = ['  ' + line for line in sub_lines]
-            index_lines.extend(sub_lines)
+            index_lines.extend(['  ' + line for line in sub_lines])
+        else:
+            anchor = generate_anchor(current_path)
+            index_lines.append(f'- 📄 [{key}](#{anchor})')
     return index_lines
 
-# Function to generate a valid anchor from a file path
-def generate_anchor(path):
-    # Replace spaces with hyphens and remove invalid characters
-    anchor = re.sub(r'[\s/\\]+', '-', path)
-    anchor = re.sub(r'[^a-zA-Z0-9\-_]', '', anchor)
-    anchor = anchor.lower()
-    return anchor
 
-# Build the directory tree
-directory_tree = {}
-file_list = []
-
+# Walk the directory and process files
 for root, dirs, files in os.walk('.', topdown=True):
     # Exclude ignored directories
-    dirs[:] = [d for d in dirs if d not in ignore_dirs]
+    dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
 
     # Add the root to folders_set if it's not '.'
-    if root != '.':
-        relative_root = os.path.relpath(root, '.')
+    relative_root = os.path.relpath(root, '.')
+    if relative_root != '.':
         folders_set.add(relative_root)
-    
+
+    # Build path_parts for directory_tree
+    path_parts = [] if relative_root == '.' else os.path.normpath(
+        relative_root).split(os.sep)
+
     for file in files:
-        if file in ignore_files:
+        if file in IGNORE_FILES:
             continue
 
         total_files += 1  # Increment total files
 
         file_path = os.path.join(root, file)
         relative_path = os.path.relpath(file_path, '.')
-        path_parts = os.path.normpath(relative_path).split(os.sep)[:-1]
-        insert_into_tree(directory_tree, path_parts, file)
-        file_list.append((relative_path, file_path))
+        file_parts = path_parts + [file]
 
-# Generate the index
-index_lines = generate_index(directory_tree)
+        # Insert file into directory_tree
+        insert_into_tree(directory_tree, file_parts)
 
-# Initialize output content
-output_content = []
+        # Generate anchor for the heading
+        anchor = generate_anchor(relative_path)
+        # Write a heading with the file path and name, including the anchor
+        output_content.append(f'# {relative_path} <a id="{anchor}"></a>\n\n')
 
-# Process files to collect stats and build output content
-for relative_path, file_path in file_list:
-    # Generate anchor for the heading
-    anchor = generate_anchor(relative_path)
-    # Write a heading with the file path and name, including the anchor
-    output_content.append(f'# {relative_path} <a id="{anchor}"></a>\n\n')
+        # Determine the language based on the file extension
+        _, ext = os.path.splitext(file_path)
+        language = LANGUAGE_EXTENSIONS.get(ext.lower(), '')
 
-    # Determine the language based on the file extension
-    _, ext = os.path.splitext(file_path)
-    language = language_extensions.get(ext.lower(), '')
+        # Start the code block
+        output_content.append(f'```{language}\n')
 
-    # Start the code block
-    output_content.append(f'```{language}\n')
+        # Read and write the file contents, and collect stats
+        try:
+            with open(file_path, 'r', encoding='utf-8') as infile:
+                contents = infile.read()
+                output_content.append(contents)
+                # Update stats
+                total_characters += len(contents)
+                total_lines += contents.count('\n')
+                total_words += len(contents.split())
+        except (UnicodeDecodeError, PermissionError) as e:
+            print(f"Skipping file {file_path}: {e}")
+            output_content.append(
+                f"<!-- Skipping file {relative_path}: {e} -->\n")
 
-    # Read and write the file contents, and collect stats
-    try:
-        with open(file_path, 'r', encoding='utf-8') as infile:
-            contents = infile.read()
-            output_content.append(contents)
-            # Update stats
-            total_characters += len(contents)
-            total_lines += contents.count('\n') + 1  # Add 1 if the file doesn't end with a newline
-            total_words += len(contents.split())
-    except (UnicodeDecodeError, PermissionError) as e:
-        print(f"Skipping file {file_path}: {e}")
-        output_content.append(f"<!-- Skipping file {relative_path}: {e} -->\n")
-
-    # End the code block
-    output_content.append('\n```\n\n')
+        # End the code block
+        output_content.append('\n```\n\n')
 
 # Compute total folders
 total_folders = len(folders_set)
 
+# Generate the index
+index_lines = generate_index(directory_tree)
+
 # Write to the output file
-with open(output_file, 'w', encoding='utf-8') as outfile:
+with open(OUTPUT_FILE, 'w', encoding='utf-8') as outfile:
     # Write the folder name as the top title
     outfile.write(f'# {folder_name}\n\n')
 
